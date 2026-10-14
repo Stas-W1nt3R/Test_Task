@@ -1,0 +1,69 @@
+services:
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  web:
+    build: .
+    command: "uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    volumes:
+      - .:/app
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+      - db
+    environment:
+      - DB_HOST=${DB_HOST}
+      - DB_NAME=${DB_NAME}
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_PORT=${DB_PORT}
+      - REDIS_URL=${REDIS_URL}
+
+  celery_worker:
+    build: .
+    command: celery -A app.core.celery_app worker --loglevel=info --autoscale=10,2
+    volumes:
+      - .:/app
+    depends_on:
+      - redis
+      - db
+    environment:
+      - DB_HOST=${DB_HOST}
+      - DB_NAME=${DB_NAME}
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_PORT=${DB_PORT}
+      - REDIS_URL=${REDIS_URL}
+
+  celery_beat:
+    build: .
+    command: celery -A app.core.celery_app beat --loglevel=info
+    volumes:
+      - .:/app
+    depends_on:
+      - redis
+      - db
+    environment:
+      - DB_HOST=${DB_HOST}
+      - DB_NAME=${DB_NAME}
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_PORT=${DB_PORT}
+      - REDIS_URL=${REDIS_URL}
+
+volumes:
+  postgres_data:

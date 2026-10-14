@@ -1,0 +1,19 @@
+# Виртуальное окружение
+.venv/
+venv/
+env/
+ENV/
+
+# Файлы кэша Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Секретные файлы
+.env
+!.env.example
+
+# IDE
+.vscode/
+.idea/
