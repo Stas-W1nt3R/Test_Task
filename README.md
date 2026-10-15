@@ -12,8 +12,9 @@
 - **FastAPI** — внешнее API
 - **Celery + Redis** — периодический запуск задачи сбора цен (beat + worker)
 - **PostgreSQL + asyncpg** — база данных
-- **SQLAlchemy 2.0 (async)** — ORM
+- **SQLAlchemy 2.1.4** — ORM
 - **aiohttp** — HTTP-клиент для Deribit API
+- **unittest** — юнит-тесты
 - **Docker + docker-compose** — развёртывание
 
 ## API
@@ -31,7 +32,7 @@
 ```json
 {
   "ticker": "btc_usd",
-  "current_price": 114523.4,
+  "current_price": 82790,
   "time": 1760918400
 }
 ```
@@ -71,6 +72,25 @@ celery -A app.core.celery_app worker --loglevel=info   # воркер
 celery -A app.core.celery_app beat --loglevel=info     # планировщик
 ```
 
+## Тестирование
+
+Тесты написаны на стандартном `unittest` (без внешних зависимостей, кроме FastAPI TestClient). Сеть и база данных в тестах не используются: запросы к Deribit перехватываются моком `aiohttp.ClientSession`, а зависимость сессии БД подменяется через `app.dependency_overrides`.
+
+Запуск всех тестов:
+
+```bash
+# локально
+python -m unittest discover app/tests -v
+
+# внутри docker-контейнера
+docker-compose exec web python -m unittest discover app/tests -v
+```
+
+Что покрыто:
+
+- `DeribitClient` — успешный парсинг ответа и ошибка при отсутствии `result`;
+- API-эндпоинты — обязательность query-параметра `ticker` (422 без него), формат ответа `/prices/all`.
+
 ## Переменные окружения
 
 | Переменная | Описание | Пример |
@@ -83,7 +103,10 @@ celery -A app.core.celery_app beat --loglevel=info     # планировщик
 | `REDIS_URL` | URL брокера Celery | `redis://redis:6379/0` |
 | `DERIBIT_API_URL` | URL метода `get_index_price` Deribit | `https://test.deribit.com/api/v2/public/get_index_price?index_name=` |
 
-## Design
+> В `.env.example` указан тестовый стенд Deribit (`test.deribit.com`).
+> Для боевых данных: `https://www.deribit.com/api/v2/public/get_index_price?index_name=`.
+
+## Design decisions
 
 ### Общая схема
 
@@ -92,11 +115,11 @@ celery -A app.core.celery_app beat --loglevel=info     # планировщик
                         │ Celery beat│ ────────────────► │ Celery worker    │
                         └────────────┘                   │ (fetch_prices)   │
                                                          └──────┬───────────┘
-                              сохраняет в PostgreSQL          │ aiohttp
-                                (тикер, цена, UNIX-время)     ▼
-                                                         ┌────────────┐
-                                                         │ Deribit API│
-                                                         └────────────┘
+                              сохраняет в PostgreSQL            │ aiohttp
+                                (тикер, цена, UNIX-время)       ▼
+                                                          ┌────────────┐
+                                                          │ Deribit API│
+                                                          └────────────┘
 
  ┌──────────┐   GET /prices/*    ┌─────────┐   SQL    ┌────────────┐
  │ Клиент   │ ─────────────────► │ FastAPI │ ───────► │ PostgreSQL │
@@ -113,7 +136,8 @@ app/
 ├── repositories/   # Слой доступа к данным (PriceRepository)
 ├── schemas/        # Pydantic-схемы ответов API
 ├── services/       # Клиент к API Deribit (DeribitClient)
-└── tasks/          # Celery-задача сбора цен
+├── tasks/          # Celery-задача сбора цен
+└── tests/          # Юнит-тесты (unittest, моки без сети и БД)
 ```
 
 ### Принятые решения
@@ -136,7 +160,7 @@ Beat и worker разнесены по отдельным контейнерам
 
 **Async стек.** Сбор цен и API — это I/O-bound задачи, поэтому везде
 используется асинхронность: `aiohttp` для запросов к Deribit, `asyncpg` +
-`AsyncSession` SQLAlchemy для БД, `async`/`await` в роутерах. Одно соединение
+`AsyncSession` SQLAlchemy для БД, `async`/`await` в роутерах. SQLAlchemy соединение
 с БД обслуживает много запросов без блокировок.
 
 **Модель данных.** Таблица `price_record`: `id` (PK), `ticker` (с индексом —
@@ -145,11 +169,14 @@ Beat и worker разнесены по отдельным контейнерам
 (начало и конец дня в UTC), что позволяет использовать индекс и не делать
 преобразования на уровне БД.
 
+**Тестирование.** Юнит-тесты на стандартном `unittest` с `IsolatedAsyncioTestCase`
+для асинхронных тестов. Внешние зависимости подменяются: HTTP-запросы к
+Deribit — моком `aiohttp.ClientSession`, сессия БД в эндпоинтах — через
+`app.dependency_overrides`. Так тесты проходят без сети, PostgreSQL и Redis.
+
 **Создание таблиц.** Используется `Base.metadata.create_all` на старте
 приложения (lifespan) — достаточно для тестового задания. Для продакшена
 заменил бы на Alembic-миграции.
 
 **Конфигурация.** Все параметры — через переменные окружения, валидация
 и значения по умолчанию — в `app/core/config.py` на pydantic-settings.
-Секреты не коммитятся (`.env` в `.gitignore`, в репозитории только
-`.env.example`).
